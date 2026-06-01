@@ -2379,6 +2379,74 @@ class Config:
         # Auto-detect: Agent inherits global model when AGENT_LITELLM_MODEL is empty.
         return bool(get_effective_agent_primary_model(self))
 
+    def add_hot_stocks_to_watchlist(self, codes: List[str]) -> List[str]:
+        """
+        将推荐标的代码追加到自选股列表并持久化到 .env 文件。
+
+        Args:
+            codes: 需要加入自选的股票代码列表（如 ['600519', '000001']）
+
+        Returns:
+            实际新增的代码列表（去重后的）
+        """
+        if not codes:
+            return []
+
+        # 确保当前 stock_list 已刷新
+        self.refresh_stock_list()
+
+        existing = set(self.stock_list)
+        new_codes = []
+        for code in codes:
+            code = (code or "").strip().upper()
+            if code and code not in existing:
+                new_codes.append(code)
+                existing.add(code)
+
+        if not new_codes:
+            logger.info("[Config] 推荐标的已全部在自选股中，无需追加")
+            return []
+
+        # 合并并排序
+        merged = list(self.stock_list) + new_codes
+        self.stock_list = merged
+
+        # 持久化到 .env 文件
+        env_file = os.getenv("ENV_FILE")
+        env_path = Path(env_file) if env_file else (Path(__file__).parent.parent / '.env')
+        try:
+            if env_path.exists():
+                # 读取现有 .env 内容
+                content = env_path.read_text(encoding='utf-8')
+                # 找到 STOCK_LIST 行并替换
+                new_stock_str = ','.join(merged)
+                replaced = False
+                lines = content.split('\n')
+                for i, line in enumerate(lines):
+                    stripped = line.strip()
+                    if stripped.startswith('STOCK_LIST=') or stripped.startswith('STOCK_LIST ='):
+                        lines[i] = f"STOCK_LIST={new_stock_str}"
+                        replaced = True
+                        break
+                if not replaced:
+                    # 如果 .env 中没有 STOCK_LIST，追加一行
+                    lines.append(f"STOCK_LIST={new_stock_str}")
+                    replaced = True
+
+                if replaced:
+                    env_path.write_text('\n'.join(lines), encoding='utf-8')
+                    logger.info(
+                        "[Config] 已追加 %d 只热门标的到 STOCK_LIST 并持久化: %s",
+                        len(new_codes), ', '.join(new_codes)
+                    )
+            else:
+                logger.warning("[Config] .env 文件不存在 (%s)，仅在内存中更新自选股", env_path)
+
+        except Exception as e:
+            logger.warning("[Config] 持久化 STOCK_LIST 失败: %s，仅在内存中更新", e)
+
+        return new_codes
+
     def refresh_stock_list(self) -> None:
         """
         热读取 STOCK_LIST 环境变量并更新配置中的自选股列表

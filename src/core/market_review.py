@@ -8,6 +8,7 @@
 1. 根据 MARKET_REVIEW_REGION 配置选择市场区域（cn / hk / us / both）
 2. 执行大盘复盘分析并生成复盘报告
 3. 保存和发送复盘报告
+4. 将热门题材龙头股加入自选
 """
 
 import logging
@@ -184,6 +185,7 @@ def run_market_review(
             # 多市场顺序执行，合并报告
             parts = []
             market_light_snapshots: Dict[str, Dict[str, Any]] = {}
+            all_recommended_codes: list[str] = []
             market_review_payloads: Dict[str, Dict[str, Any]] = {}
             for mkt, title_key, label in _MARKET_REVIEW_MARKETS:
                 if mkt not in run_markets:
@@ -212,6 +214,8 @@ def run_market_review(
                 )
                 if mkt_report:
                     parts.append(f"{review_text[title_key]}\n\n{mkt_report}")
+                    codes = list(getattr(review_result, "recommended_codes", []) or [])
+                    all_recommended_codes.extend(codes)
             if parts:
                 review_report = f"\n\n---\n\n{review_text['separator']}\n\n".join(parts)
             else:
@@ -239,6 +243,9 @@ def run_market_review(
             review_result = market_analyzer.run_daily_review_with_snapshot()
             review_report = review_result.report
             market_light_snapshots = {run_region: review_result.market_light_snapshot}
+            all_recommended_codes = list(
+                getattr(review_result, "recommended_codes", []) or []
+            )
             market_review_payloads = {
                 run_region: _coerce_market_review_payload(
                     review_result,
@@ -246,7 +253,7 @@ def run_market_review(
                     report=review_report,
                 )
             }
-        
+
         if review_report:
             market_review_payload = _build_combined_market_review_payload(
                 review_report=review_report,
@@ -286,7 +293,11 @@ def run_market_review(
                     market_light_snapshots=market_light_snapshots,
                     market_review_payload=market_review_payload,
                 )
-            
+
+            # 将推荐标的加入自选股（来自各 MarketAnalyzer 内的题材分析）
+            if all_recommended_codes:
+                _add_recommended_to_watchlist(all_recommended_codes, config)
+
             # 推送通知（合并模式下跳过，由 main 层统一发送）
             if merge_notification and send_notification:
                 logger.info(
@@ -381,6 +392,26 @@ def run_market_review(
         )
     
     return None
+
+
+def _add_recommended_to_watchlist(
+    codes: list[str],
+    config=None,
+) -> None:
+    """将推荐标的加入自选股配置"""
+    if config is None:
+        config = get_config()
+
+    try:
+        added = config.add_hot_stocks_to_watchlist(codes)
+        if added:
+            logger.info(
+                "已自动将 %d 只热门题材标的加入自选股: %s", len(added), ", ".join(added)
+            )
+        else:
+            logger.info("推荐标的已全部在自选股中")
+    except Exception as e:
+        logger.warning("自动添加自选股失败: %s", e)
 
 
 def _coerce_market_review_payload(

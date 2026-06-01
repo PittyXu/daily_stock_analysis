@@ -26,7 +26,9 @@ _CURRENT_CONTEXT: ContextVar[Optional["RunDiagnosticContext"]] = ContextVar(
 
 _SECRET_REDACTIONS = (
     (
-        re.compile(r"(?i)\b(authorization)\s*[:=]\s*(?:(?:Bearer|Basic|Token)\s+)?[^\s,&;]+"),
+        re.compile(
+            r"(?i)\b(authorization)\s*[:=]\s*(?:(?:Bearer|Basic|Token)\s+)?[^\s,&;]+"
+        ),
         lambda match: f"{match.group(1)}=<redacted>",
     ),
     (
@@ -34,7 +36,9 @@ _SECRET_REDACTIONS = (
         r"\1<redacted>:<redacted>@",
     ),
     (
-        re.compile(r"https?://[^\s]+?(?:token|key|secret|webhook)[^\s]*", re.IGNORECASE),
+        re.compile(
+            r"https?://[^\s]+?(?:token|key|secret|webhook)[^\s]*", re.IGNORECASE
+        ),
         "<redacted-url>",
     ),
     (
@@ -43,7 +47,9 @@ _SECRET_REDACTIONS = (
             r"([A-Z0-9_]*?(?:api[_-]?key|access[_-]?token|token|secret|password|passwd|cookie))"
             r"\1\s*:\s*([\"'])([^\"']+)\3"
         ),
-        lambda match: f"{match.group(1)}{match.group(2)}{match.group(1)}: {match.group(3)}<redacted>{match.group(3)}",
+        lambda match: (
+            f"{match.group(1)}{match.group(2)}{match.group(1)}: {match.group(3)}<redacted>{match.group(3)}"
+        ),
     ),
     (
         re.compile(
@@ -277,7 +283,9 @@ class RunDiagnosticComponent:
             "message": self.message,
             "details": self.details,
         }
-        return {key: value for key, value in payload.items() if value not in (None, {}, [])}
+        return {
+            key: value for key, value in payload.items() if value not in (None, {}, [])
+        }
 
 
 @dataclass
@@ -305,8 +313,7 @@ class RunDiagnosticSummary:
             "status_label": self.status_label,
             "reason": self.reason,
             "components": {
-                key: component.to_dict()
-                for key, component in self.components.items()
+                key: component.to_dict() for key, component in self.components.items()
             },
         }
         payload["copy_text"] = format_copyable_diagnostics(payload)
@@ -865,6 +872,37 @@ def _notification_flow_event(
     }
 
 
+def _persist_provider_run_to_db(
+    *,
+    data_type: str,
+    provider: str,
+    operation: str,
+    success: bool,
+    latency_ms: Optional[int] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[Any] = None,
+    record_count: Optional[int] = None,
+) -> None:
+    """Persist a provider run to database (fail-open, never propagates)."""
+    try:
+        from src.repositories.provider_log_repo import ProviderLogRepository
+
+        ProviderLogRepository().insert(
+            {
+                "data_type": data_type,
+                "provider": provider,
+                "operation": operation,
+                "success": success,
+                "latency_ms": latency_ms,
+                "error_type": error_type,
+                "error_message_sanitized": sanitize_diagnostic_text(error_message),
+                "record_count": record_count,
+            }
+        )
+    except Exception:
+        pass
+
+
 def record_provider_run(
     *,
     data_type: str,
@@ -1072,9 +1110,7 @@ def _component(
     details: Optional[Dict[str, Any]] = None,
 ) -> RunDiagnosticComponent:
     clean_details = {
-        key: value
-        for key, value in (details or {}).items()
-        if value is not None
+        key: value for key, value in (details or {}).items() if value is not None
     }
     return RunDiagnosticComponent(
         key=key,
@@ -1166,7 +1202,8 @@ def _provider_component(
     provider_runs: List[Dict[str, Any]],
 ) -> RunDiagnosticComponent:
     runs = [
-        run for run in provider_runs
+        run
+        for run in provider_runs
         if isinstance(run, dict) and run.get("data_type") == data_type
     ]
     if not runs:
@@ -1223,7 +1260,9 @@ def _provider_component(
     )
 
 
-def _news_component(context_snapshot: Dict[str, Any], raw_result: Dict[str, Any]) -> RunDiagnosticComponent:
+def _news_component(
+    context_snapshot: Dict[str, Any], raw_result: Dict[str, Any]
+) -> RunDiagnosticComponent:
     label = "新闻搜索"
     input_block = _analysis_input_block(context_snapshot, "news")
     input_message = _analysis_input_status_message(input_block)
@@ -1272,15 +1311,18 @@ def _news_component(context_snapshot: Dict[str, Any], raw_result: Dict[str, Any]
             },
         )
     if has_snapshot_news and not has_retrieval_news:
-        return _component("news", label, "unknown", "新闻检索未记录原始证据，可能未尝试或未启用")
+        return _component(
+            "news", label, "unknown", "新闻检索未记录原始证据，可能未尝试或未启用"
+        )
     return _component("news", label, "unknown", "新闻搜索未记录诊断信息")
 
 
-def _llm_component(diagnostics: Dict[str, Any], raw_result: Dict[str, Any]) -> RunDiagnosticComponent:
+def _llm_component(
+    diagnostics: Dict[str, Any], raw_result: Dict[str, Any]
+) -> RunDiagnosticComponent:
     label = "LLM"
     runs = [
-        run for run in _as_list(diagnostics.get("llm_runs"))
-        if isinstance(run, dict)
+        run for run in _as_list(diagnostics.get("llm_runs")) if isinstance(run, dict)
     ]
     if runs:
         successes = [run for run in runs if run.get("success") is True]
@@ -1288,8 +1330,12 @@ def _llm_component(diagnostics: Dict[str, Any], raw_result: Dict[str, Any]) -> R
         last_run = runs[-1]
         if successes:
             success_run = successes[-1]
-            model = success_run.get("model") or raw_result.get("model_used") or "unknown"
-            status = "degraded" if failures or success_run.get("fallback_model") else "ok"
+            model = (
+                success_run.get("model") or raw_result.get("model_used") or "unknown"
+            )
+            status = (
+                "degraded" if failures or success_run.get("fallback_model") else "ok"
+            )
             message = f"LLM {model} 成功"
             if status == "degraded":
                 message = f"LLM {model} 成功，期间发生过失败或模型切换"
@@ -1332,15 +1378,20 @@ def _llm_component(diagnostics: Dict[str, Any], raw_result: Dict[str, Any]) -> R
 def _notification_component(diagnostics: Dict[str, Any]) -> RunDiagnosticComponent:
     label = "通知"
     runs = [
-        run for run in _as_list(diagnostics.get("notification_runs"))
+        run
+        for run in _as_list(diagnostics.get("notification_runs"))
         if isinstance(run, dict)
     ]
     if not runs:
         return _component("notification", label, "unknown", "通知结果未记录")
 
-    skipped = [run for run in runs if run.get("status") in {"skipped", "not_configured"}]
+    skipped = [
+        run for run in runs if run.get("status") in {"skipped", "not_configured"}
+    ]
     successes = [run for run in runs if run.get("success") is True]
-    failures = [run for run in runs if run.get("success") is False and run not in skipped]
+    failures = [
+        run for run in runs if run.get("success") is False and run not in skipped
+    ]
     channels = [run.get("channel") for run in runs if run.get("channel")]
     if successes and failures:
         return _component(
@@ -1359,7 +1410,11 @@ def _notification_component(diagnostics: Dict[str, Any]) -> RunDiagnosticCompone
             {"channels": channels},
         )
     if skipped and not failures:
-        status = "not_configured" if any(run.get("status") == "not_configured" for run in skipped) else "skipped"
+        status = (
+            "not_configured"
+            if any(run.get("status") == "not_configured" for run in skipped)
+            else "skipped"
+        )
         return _component(
             "notification",
             label,
@@ -1383,7 +1438,8 @@ def _history_component(
 ) -> RunDiagnosticComponent:
     label = "历史保存"
     runs = [
-        run for run in _as_list(diagnostics.get("history_runs"))
+        run
+        for run in _as_list(diagnostics.get("history_runs"))
         if isinstance(run, dict)
     ]
     if runs:
@@ -1422,12 +1478,12 @@ def build_run_diagnostic_summary(
     raw = _as_dict(raw_result)
     diagnostics = _as_dict(snapshot.get("diagnostics"))
     provider_runs = [
-        run for run in _as_list(diagnostics.get("provider_runs"))
+        run
+        for run in _as_list(diagnostics.get("provider_runs"))
         if isinstance(run, dict)
     ]
     llm_runs = [
-        run for run in _as_list(diagnostics.get("llm_runs"))
-        if isinstance(run, dict)
+        run for run in _as_list(diagnostics.get("llm_runs")) if isinstance(run, dict)
     ]
 
     daily_data_component = _provider_component(
@@ -1457,9 +1513,13 @@ def build_run_diagnostic_summary(
     has_core_diagnostic_runs = bool(provider_runs or llm_runs)
     if not has_evidence or not diagnostics:
         status = "unknown"
-    elif components["llm"].status == "failed" or components["history"].status == "failed":
+    elif (
+        components["llm"].status == "failed" or components["history"].status == "failed"
+    ):
         status = "failed"
-    elif any(component.status in {"failed", "degraded"} for component in components.values()):
+    elif any(
+        component.status in {"failed", "degraded"} for component in components.values()
+    ):
         status = "degraded"
     elif all(component.status == "unknown" for component in components.values()):
         status = "unknown"
@@ -1487,8 +1547,15 @@ def build_run_diagnostic_summary(
             ),
         )
 
-    trace_id = diagnostics.get("trace_id") or snapshot.get("trace_id") or raw.get("trace_id")
-    resolved_query_id = query_id or diagnostics.get("query_id") or snapshot.get("query_id") or raw.get("query_id")
+    trace_id = (
+        diagnostics.get("trace_id") or snapshot.get("trace_id") or raw.get("trace_id")
+    )
+    resolved_query_id = (
+        query_id
+        or diagnostics.get("query_id")
+        or snapshot.get("query_id")
+        or raw.get("query_id")
+    )
     resolved_stock_code = (
         stock_code
         or diagnostics.get("stock_code")
@@ -1502,7 +1569,8 @@ def build_run_diagnostic_summary(
         task_id=diagnostics.get("task_id"),
         query_id=resolved_query_id,
         stock_code=resolved_stock_code,
-        trigger_source=diagnostics.get("trigger_source") or snapshot.get("trigger_source"),
+        trigger_source=diagnostics.get("trigger_source")
+        or snapshot.get("trigger_source"),
         status=status,
         status_label=_SUMMARY_STATUS_LABELS[status],
         reason=reason,
@@ -1516,7 +1584,10 @@ def format_copyable_diagnostics(summary: Dict[str, Any]) -> str:
 
     def _component_line(key: str) -> str:
         component = _as_dict(components.get(key))
-        message = sanitize_diagnostic_text(component.get("message"), max_length=160) or "unknown"
+        message = (
+            sanitize_diagnostic_text(component.get("message"), max_length=160)
+            or "unknown"
+        )
         return f"{key}: {component.get('status', 'unknown')} - {message}"
 
     lines = [
